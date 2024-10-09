@@ -49,7 +49,7 @@ final_llm_config["temperature"] = 0.1
 client = autogen.OpenAIWrapper(**final_llm_config)
 
 
-def response_preparer(som_agent, inner_messages):
+def response_preparer(self, inner_messages):
     tokens = 0
 
     messages = [
