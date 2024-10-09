@@ -725,7 +725,8 @@ def run_cli(args):
     run_scenarios(
         scenario=parsed_args.scenario,
         n_repeats=parsed_args.repeat,
-        is_native=True if parsed_args.native else False,
+        is_native=True,
+        # is_native=True if parsed_args.native else False,
         config_list=config_list,
         requirements=parsed_args.requirements,
         docker_image=parsed_args.docker_image,

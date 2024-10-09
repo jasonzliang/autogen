@@ -24,21 +24,23 @@ with open("prompt.txt", "rt") as fh:
 
 config_list = autogen.config_list_from_json(
     "OAI_CONFIG_LIST",
-    filter_dict={"model": ["gpt-4"]},
+    filter_dict={"model": ["gpt-4o"]},
 )
 llm_config = testbed_utils.default_llm_config(config_list, timeout=180)
 llm_config["temperature"] = 0.1
 
 summarizer_config_list = autogen.config_list_from_json(
     "OAI_CONFIG_LIST",
-    filter_dict={"model": ["gpt-3.5-turbo-16k"]},
+    filter_dict={"model": ["gpt-4o"]},
+    # filter_dict={"model": ["gpt-3.5-turbo-16k"]},
 )
 summarizer_llm_config = testbed_utils.default_llm_config(summarizer_config_list, timeout=180)
 summarizer_llm_config["temperature"] = 0.1
 
 final_config_list = autogen.config_list_from_json(
     "OAI_CONFIG_LIST",
-    filter_dict={"model": ["gpt-4-1106-preview"]},
+    filter_dict={"model": ["gpt-4o"]},
+    # filter_dict={"model": ["gpt-4-1106-preview"]},
 )
 final_llm_config = testbed_utils.default_llm_config(final_config_list, timeout=180)
 final_llm_config["temperature"] = 0.1
