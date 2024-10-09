@@ -9,7 +9,7 @@ from datetime import datetime
 import testbed_utils
 
 import autogen
-from autogen.agentchat.contrib.group_chat_moderator import GroupChatModerator
+# from autogen.agentchat.contrib.group_chat_moderator import GroupChatModerator
 from autogen.agentchat.contrib.society_of_mind_agent import SocietyOfMindAgent
 from autogen.agentchat.contrib.web_surfer import WebSurferAgent
 from autogen.token_count_utils import count_token, get_max_token_limit
@@ -49,7 +49,7 @@ final_llm_config["temperature"] = 0.1
 client = autogen.OpenAIWrapper(**final_llm_config)
 
 
-def response_preparer(inner_messages):
+def response_preparer(som_agent, inner_messages):
     tokens = 0
 
     messages = [
@@ -152,9 +152,9 @@ Below I will pose a question to you that I would like you to answer. You should 
 {filename_prompt}{PROMPT}
 """.strip()
 
-groupchat = GroupChatModerator(
+groupchat = autogen.GroupChat(
     agents=[user_proxy, assistant, web_surfer],
-    first_speaker=assistant,
+    # first_speaker=assistant,
     max_round=30,
     messages=[],
     speaker_selection_method="auto",
