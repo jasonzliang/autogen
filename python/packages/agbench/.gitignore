@@ -1,0 +1,4 @@
+scenarios/*/Downloads
+scenarios/*/Tasks
+**/Results
+*/Results
