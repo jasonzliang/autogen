@@ -163,7 +163,6 @@ class ConversableAgent(LLMAgent):
                 ) from e
 
         self._validate_llm_config(llm_config)
-
         if logging_enabled():
             log_new_agent(self, locals())
 
