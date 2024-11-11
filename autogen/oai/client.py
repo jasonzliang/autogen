@@ -813,12 +813,12 @@ class OpenAIWrapper:
                 self._update_usage(actual_usage=actual_usage, total_usage=total_usage)
                 if cache_client is not None:
                     # Cache the response
-                    try:
-                        with cache_client as cache:
-                            cache.set(key, response)
-                    except:
-                        import traceback; traceback.print_exc()
-                        print("Warning: cache error\nKey:%s\nResponse:%s" % (key, response))
+                    # try:
+                    with cache_client as cache:
+                        cache.set(key, response)
+                    # except:
+                    #     import traceback; traceback.print_exc()
+                    #     print("Warning: cache error\nKey:%s\nResponse:%s" % (key, response))
 
                 if logging_enabled():
                     # TODO: log the config_id and pass_filter etc.
