@@ -396,7 +396,10 @@ class OpenAIWrapper:
     total_usage_summary: Optional[Dict[str, Any]] = None
     actual_usage_summary: Optional[Dict[str, Any]] = None
 
-    def __init__(self, *, config_list: Optional[List[Dict[str, Any]]] = None, **base_config: Any):
+    def __init__(self, *,
+        config_list: Optional[List[Dict[str, Any]]] = None,
+        use_cache: Optional[bool] = True
+        **base_config: Any):
         """
         Args:
             config_list: a list of config dicts to override the base_config.
@@ -431,6 +434,7 @@ class OpenAIWrapper:
 
         if logging_enabled():
             log_new_wrapper(self, locals())
+        self.use_cache = use_cache
         openai_config, extra_kwargs = self._separate_openai_config(base_config)
         # It's OK if "model" is not provided in base_config or config_list
         # Because one can provide "model" at `create` time.
@@ -729,7 +733,7 @@ class OpenAIWrapper:
                 # Legacy cache behavior, if cache_seed is given, use DiskCache.
                 cache_client = Cache.disk(cache_seed, LEGACY_CACHE_DIR)
 
-            if cache_client is not None:
+            if self.use_cache and cache_client is not None:
                 with cache_client as cache:
                     # Try to get the response from cache
                     key = get_key(params)
