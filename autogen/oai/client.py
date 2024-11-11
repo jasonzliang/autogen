@@ -727,14 +727,15 @@ class OpenAIWrapper:
             actual_usage = None
 
             cache_client = None
-            if cache is not None:
-                # Use the cache object if provided.
-                cache_client = cache
-            elif cache_seed is not None:
-                # Legacy cache behavior, if cache_seed is given, use DiskCache.
-                cache_client = Cache.disk(cache_seed, LEGACY_CACHE_DIR)
+            if self.use_cache:
+                if cache is not None:
+                    # Use the cache object if provided.
+                    cache_client = cache
+                elif cache_seed is not None:
+                    # Legacy cache behavior, if cache_seed is given, use DiskCache.
+                    cache_client = Cache.disk(cache_seed, LEGACY_CACHE_DIR)
 
-            if self.use_cache and cache_client is not None:
+            if cache_client is not None:
                 with cache_client as cache:
                     # Try to get the response from cache
                     key = get_key(params)
@@ -818,12 +819,8 @@ class OpenAIWrapper:
                 self._update_usage(actual_usage=actual_usage, total_usage=total_usage)
                 if cache_client is not None:
                     # Cache the response
-                    # try:
                     with cache_client as cache:
                         cache.set(key, response)
-                    # except:
-                    #     import traceback; traceback.print_exc()
-                    #     print("Warning: cache error\nKey:%s\nResponse:%s" % (key, response))
 
                 if logging_enabled():
                     # TODO: log the config_id and pass_filter etc.
