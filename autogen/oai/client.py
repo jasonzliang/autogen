@@ -818,7 +818,7 @@ class OpenAIWrapper:
                             cache.set(key, response)
                     except:
                         import traceback; traceback.print_exc()
-                        print("Cache error\nKey:%s\nResponse:%s" % (key, response))
+                        print("Warning: cache error\nKey:%s\nResponse:%s" % (key, response))
 
                 if logging_enabled():
                     # TODO: log the config_id and pass_filter etc.
