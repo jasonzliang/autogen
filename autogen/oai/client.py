@@ -396,9 +396,10 @@ class OpenAIWrapper:
     total_usage_summary: Optional[Dict[str, Any]] = None
     actual_usage_summary: Optional[Dict[str, Any]] = None
 
-    def __init__(self, *,
+    def __init__(self,
+        *,
         config_list: Optional[List[Dict[str, Any]]] = None,
-        use_cache: Optional[bool] = True
+        use_cache: Optional[bool] = True,
         **base_config: Any):
         """
         Args:
