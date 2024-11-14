@@ -399,7 +399,7 @@ class OpenAIWrapper:
     def __init__(self,
         *,
         config_list: Optional[List[Dict[str, Any]]] = None,
-        use_cache: Optional[bool] = True,
+        use_cache: Optional[bool] = False,
         **base_config: Any):
         """
         Args:
