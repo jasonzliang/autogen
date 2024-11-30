@@ -49,11 +49,17 @@ class FileLogger(BaseLogger):
         self.config = config
         self.session_id = str(uuid.uuid4())
 
-        curr_dir = os.getcwd()
-        self.log_dir = os.path.join(curr_dir, "autogen_logs")
-        os.makedirs(self.log_dir, exist_ok=True)
+        if "filepath" in self.config:
+            assert "filename" not in self.config
+            self.log_dir = os.path.dirname(self.config["filepath"])
+            self.log_file = self.config["filepath"]
+        else:
+            curr_dir = os.getcwd()
+            self.log_dir = os.path.join(curr_dir, "autogen_logs")
+            self.log_file = os.path.join(self.log_dir,
+                self.config.get("filename", "runtime.log"))
 
-        self.log_file = os.path.join(self.log_dir, self.config.get("filename", "runtime.log"))
+        os.makedirs(self.log_dir, exist_ok=True)
         try:
             with open(self.log_file, "a"):
                 pass
