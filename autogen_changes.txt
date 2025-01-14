@@ -1,0 +1,810 @@
+diff --git a/.gitignore b/.gitignore
+index 4c925f73..b876edc8 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -190,3 +190,6 @@ notebook/result.png
+ samples/apps/autogen-studio/autogenstudio/models/test/
+ 
+ notebook/coding
++
++.tags
++.tags_*
+diff --git a/autogen/agentchat/contrib/society_of_mind_agent.py b/autogen/agentchat/contrib/society_of_mind_agent.py
+index e7676818..2628afa3 100644
+--- a/autogen/agentchat/contrib/society_of_mind_agent.py
++++ b/autogen/agentchat/contrib/society_of_mind_agent.py
+@@ -166,7 +166,7 @@ def generate_inner_monologue_reply(
+         if messages is None:
+             messages = self._oai_messages[sender]
+ 
+-        # We want to clear the inner monolgue, keeping only the exteranl chat for context.
++        # We want to clear the inner monologue, keeping only the external chat for context.
+         # Reset all the counters and histories, then populate agents with necessary context from the external chat
+         self.chat_manager.reset()
+         self.update_chat_manager(self.chat_manager)
+diff --git a/autogen/agentchat/conversable_agent.py b/autogen/agentchat/conversable_agent.py
+index 084e93c0..d5f7e70d 100644
+--- a/autogen/agentchat/conversable_agent.py
++++ b/autogen/agentchat/conversable_agent.py
+@@ -80,6 +80,7 @@ def __init__(
+         description: Optional[str] = None,
+         chat_messages: Optional[Dict[Agent, List[Dict]]] = None,
+         silent: Optional[bool] = None,
++        role_for_system_message: Literal["system", "user"] = "system",
+     ):
+         """
+         Args:
+@@ -144,7 +145,7 @@ def __init__(
+         else:
+             self._oai_messages = chat_messages
+ 
+-        self._oai_system_message = [{"content": system_message, "role": "system"}]
++        self._oai_system_message = [{"content": system_message, "role": role_for_system_message}]
+         self._description = description if description is not None else system_message
+         self._is_termination_msg = (
+             is_termination_msg
+@@ -163,7 +164,6 @@ def __init__(
+                 ) from e
+ 
+         self._validate_llm_config(llm_config)
+-
+         if logging_enabled():
+             log_new_agent(self, locals())
+ 
+diff --git a/autogen/oai/client.py b/autogen/oai/client.py
+index 481e5572..5a1ece1a 100644
+--- a/autogen/oai/client.py
++++ b/autogen/oai/client.py
+@@ -396,7 +396,11 @@ class OpenAIWrapper:
+     total_usage_summary: Optional[Dict[str, Any]] = None
+     actual_usage_summary: Optional[Dict[str, Any]] = None
+ 
+-    def __init__(self, *, config_list: Optional[List[Dict[str, Any]]] = None, **base_config: Any):
++    def __init__(self,
++        *,
++        config_list: Optional[List[Dict[str, Any]]] = None,
++        use_cache: Optional[bool] = False,
++        **base_config: Any):
+         """
+         Args:
+             config_list: a list of config dicts to override the base_config.
+@@ -431,6 +435,7 @@ def __init__(self, *, config_list: Optional[List[Dict[str, Any]]] = None, **base
+ 
+         if logging_enabled():
+             log_new_wrapper(self, locals())
++        self.use_cache = use_cache
+         openai_config, extra_kwargs = self._separate_openai_config(base_config)
+         # It's OK if "model" is not provided in base_config or config_list
+         # Because one can provide "model" at `create` time.
+@@ -722,12 +727,13 @@ def yes_or_no_filter(context, response):
+             actual_usage = None
+ 
+             cache_client = None
+-            if cache is not None:
+-                # Use the cache object if provided.
+-                cache_client = cache
+-            elif cache_seed is not None:
+-                # Legacy cache behavior, if cache_seed is given, use DiskCache.
+-                cache_client = Cache.disk(cache_seed, LEGACY_CACHE_DIR)
++            if self.use_cache:
++                if cache is not None:
++                    # Use the cache object if provided.
++                    cache_client = cache
++                elif cache_seed is not None:
++                    # Legacy cache behavior, if cache_seed is given, use DiskCache.
++                    cache_client = Cache.disk(cache_seed, LEGACY_CACHE_DIR)
+ 
+             if cache_client is not None:
+                 with cache_client as cache:
+diff --git a/autogen/oai/openai_utils.py b/autogen/oai/openai_utils.py
+index ceb7ef90..5a100532 100644
+--- a/autogen/oai/openai_utils.py
++++ b/autogen/oai/openai_utils.py
+@@ -26,10 +26,17 @@
+ DEFAULT_AZURE_API_VERSION = "2024-02-01"
+ OAI_PRICE1K = {
+     # https://openai.com/api/pricing/
++    # o1-preview
++    "o1-preview": (0.015, 0.060),
++    "o1-preview-2024-09-12": (0.015, 0.060),
++    # o1-mini
++    "o1-mini": (0.003, 0.012),
++    "o1-mini-2024-09-12": (0.003, 0.012),
+     # gpt-4o
+     "gpt-4o": (0.005, 0.015),
+     "gpt-4o-2024-05-13": (0.005, 0.015),
+     "gpt-4o-2024-08-06": (0.0025, 0.01),
++    "gpt-4o-2024-11-20": (0.0025, 0.01),
+     # gpt-4-turbo
+     "gpt-4-turbo-2024-04-09": (0.01, 0.03),
+     # gpt-4
+diff --git a/notebook/agentchat_society_of_mind.py b/notebook/agentchat_society_of_mind.py
+new file mode 100644
+index 00000000..abb19ba8
+--- /dev/null
++++ b/notebook/agentchat_society_of_mind.py
+@@ -0,0 +1,118 @@
++#!/usr/bin/env python
++# coding: utf-8
++
++# # SocietyOfMindAgent
++# 
++# This notebook demonstrates the SocietyOfMindAgent, which runs a group chat as an internal monologue, but appears to the external world as a single agent. This confers three distinct advantages:
++# 
++# 1. It provides a clean way of producing a hierarchy of agents, hiding complexity as inner monologues.
++# 2. It provides a consistent way of extracting an answer from a lengthy group chat (normally, it is not clear which message is the final response, and the response itself may not always be formatted in a way that makes sense when extracted as a standalone message).
++# 3. It provides a way of recovering when agents exceed their context window constraints (the inner monologue is protected by try-catch blocks)
++# 
++# ````{=mdx}
++# :::info Requirements
++# Install `autogen-agentchat`:
++# ```bash
++# pip install autogen-agentchat~=0.2
++# ```
++# 
++# For more information, please refer to the [installation guide](/docs/installation/).
++# :::
++# ````
++
++# In[2]:
++
++
++import autogen  # noqa: E402
++
++llm_config = {
++    "timeout": 600,
++    "cache_seed": 44,  # change the seed for different trials
++    "config_list": autogen.config_list_from_json(
++        "OAI_CONFIG_LIST",
++        filter_dict={"model": ["gpt-4", "gpt-4-0613", "gpt-4-32k", "gpt-4-32k-0613", "gpt-4-1106-preview"]},
++    ),
++    "temperature": 0,
++}
++
++
++# ````{=mdx}
++# :::tip
++# Learn more about configuring LLMs for agents [here](/docs/topics/llm_configuration).
++# :::
++# ````
++# 
++# ### Example Group Chat with Two Agents
++# 
++# In this example, we will use an AssistantAgent and a UserProxy agent (configured for code execution) to work together to solve a problem. Executing code requires *at least* two conversation turns (one to write the code, and one to execute the code). If the code fails, or needs further refinement, then additional turns may also be needed. We will then wrap these agents in a SocietyOfMindAgent, hiding the internal discussion from other agents (though will still appear in the console), and ensuring that the response is suitable as a standalone message.
++
++# #### Construct the Inner-Monologue Agents
++# We begin by constructing the inner-monologue agents. These are the agents that do that real work.
++
++# In[3]:
++
++
++assistant = autogen.AssistantAgent(
++    "inner-assistant",
++    llm_config=llm_config,
++    is_termination_msg=lambda x: x.get("content", "").find("TERMINATE") >= 0,
++)
++
++code_interpreter = autogen.UserProxyAgent(
++    "inner-code-interpreter",
++    human_input_mode="NEVER",
++    code_execution_config={
++        "work_dir": "coding",
++        "use_docker": False,
++    },
++    default_auto_reply="",
++    is_termination_msg=lambda x: x.get("content", "").find("TERMINATE") >= 0,
++)
++
++groupchat = autogen.GroupChat(
++    agents=[assistant, code_interpreter],
++    messages=[],
++    speaker_selection_method="round_robin",  # With two agents, this is equivalent to a 1:1 conversation.
++    allow_repeat_speaker=False,
++    max_round=8,
++)
++
++manager = autogen.GroupChatManager(
++    groupchat=groupchat,
++    is_termination_msg=lambda x: x.get("content", "").find("TERMINATE") >= 0,
++    llm_config=llm_config,
++)
++
++
++# #### Construct and Run the SocietyOfMind Agent
++# We now wrap the inner group-chat with the SocietyOfMind Agent, and create a UserProxy to talk to it.
++
++# In[4]:
++
++
++from autogen.agentchat.contrib.society_of_mind_agent import SocietyOfMindAgent  # noqa: E402
++
++task = "On which days in 2024 was Microsoft Stock higher than $370?"
++
++society_of_mind_agent = SocietyOfMindAgent(
++    "society_of_mind",
++    chat_manager=manager,
++    llm_config=llm_config,
++)
++
++user_proxy = autogen.UserProxyAgent(
++    "user_proxy",
++    human_input_mode="NEVER",
++    code_execution_config=False,
++    default_auto_reply="",
++    is_termination_msg=lambda x: True,
++)
++
++user_proxy.initiate_chat(society_of_mind_agent, message=task)
++
++
++# #### Remarks
++# 
++# There are a few things to notice about this output:
++# - First, the user_proxy sent only one message to the society_of_mind agent, and received only one message in response. As far as it is concerned, the society_of_mind agent is the only agent in the chat.
++# - Second, the final response is formatted in a way that is standalone. Unlike the prior response, it makes no reference of a previous script or execution, and it lacks the TERMINATE keyword that ended the inner monologue.
+diff --git a/notebook/autobuild_agent_library.py b/notebook/autobuild_agent_library.py
+new file mode 100644
+index 00000000..6b618bef
+--- /dev/null
++++ b/notebook/autobuild_agent_library.py
+@@ -0,0 +1,196 @@
++#!/usr/bin/env python
++# coding: utf-8
++
++# # Automatically Build Multi-agent System from Agent Library
++# 
++# By: [Linxin Song](https://linxins97.github.io/), [Jieyu Zhang](https://jieyuz2.github.io/)
++# 
++# In this notebook, we introduce a new feature for AutoBuild, `build_from_library`, which help users build an automatic task-solving process powered by a multi-agent system from a pre-defined agent library. 
++# Specifically, in `build_from_library`, we prompt an LLM to explore useful agents from a pre-defined agent library, generating configurations for those agents for a group chat to solve the user's task.
++
++# ## Requirement
++# 
++# AutoBuild require `autogen-agentchat[autobuild]~=0.2`, which can be installed by the following command:
++
++# In[1]:
++
++
++get_ipython().run_line_magic('pip', 'install autogen-agentchat[autobuild]~=0.2')
++
++
++# ## Preparation and useful tools
++# We need to specify a `config_path`, `default_llm_config` that include backbone LLM configurations.
++
++# In[2]:
++
++
++import json
++
++import autogen
++from autogen.agentchat.contrib.agent_builder import AgentBuilder
++
++config_file_or_env = "OAI_CONFIG_LIST"  # modify path
++llm_config = {"temperature": 0}
++config_list = autogen.config_list_from_json(config_file_or_env, filter_dict={"model": ["gpt-4-1106-preview", "gpt-4"]})
++
++
++def start_task(execution_task: str, agent_list: list):
++    group_chat = autogen.GroupChat(agents=agent_list, messages=[], max_round=12)
++    manager = autogen.GroupChatManager(groupchat=group_chat, llm_config={"config_list": config_list, **llm_config})
++    agent_list[0].initiate_chat(manager, message=execution_task)
++
++
++# ## Example for generating an agent library
++# Here, we show an example of generating an agent library from a pre-defined list of agents' names by prompting a `gpt-4`. You can also prepare a handcrafted library yourself.
++# 
++# A Library contains each agent's name, description and system_message. The description is a brief introduction about agent's characteristics. As we will feed all agents' names and description to gpt-4 and let it choose the best agents for us, each agent's description should be simple but informative. 
++# 
++# First, we define a prompt template for description and system_message generation and a list of agents' name:
++
++# In[3]:
++
++
++AGENT_SYS_MSG_PROMPT = """Acccording to the following postion name, write a high quality instruction for the position following a given example. You should only return the instruction.
++
++# Position Name
++{position}
++
++# Example instruction for Data Analyst
++
++As Data Analyst, you are tasked with leveraging your extensive knowledge in data analysis to recognize and extract meaningful features from vast datasets. Your expertise in machine learning, specifically with the Random Forest Classifier, allows you to construct robust predictive models adept at handling both classification and regression tasks. You excel in model evaluation and interpretation, ensuring that the performance of your algorithms is not just assessed with precision, but also understood in the context of the data and the problem at hand. With a command over Python and proficiency in using the pandas library, you manipulate and preprocess data with ease.
++"""
++
++AGENT_DESC_PROMPT = """According to position name and the instruction, summarize the position into a high quality one sentence description.
++
++# Position Name
++{position}
++
++# Instruction
++{instruction}
++"""
++
++position_list = [
++    "Environmental_Scientist",
++    "Astronomer",
++    "Software_Developer",
++    "Data_Analyst",
++    "Journalist",
++    "Teacher",
++    "Lawyer",
++    "Programmer",
++    "Accountant",
++    "Mathematician",
++    "Physicist",
++    "Biologist",
++    "Chemist",
++    "Statistician",
++    "IT_Specialist",
++    "Cybersecurity_Expert",
++    "Artificial_Intelligence_Engineer",
++    "Financial_Analyst",
++]
++
++
++# Then we can prompt a `gpt-4` model to generate each agent's system message as well as the description:
++
++# In[4]:
++
++
++build_manager = autogen.OpenAIWrapper(config_list=config_list)
++sys_msg_list = []
++
++for pos in position_list:
++    resp_agent_sys_msg = (
++        build_manager.create(
++            messages=[
++                {
++                    "role": "user",
++                    "content": AGENT_SYS_MSG_PROMPT.format(
++                        position=pos,
++                    ),
++                }
++            ]
++        )
++        .choices[0]
++        .message.content
++    )
++    resp_desc_msg = (
++        build_manager.create(
++            messages=[
++                {
++                    "role": "user",
++                    "content": AGENT_DESC_PROMPT.format(
++                        position=pos,
++                        instruction=resp_agent_sys_msg,
++                    ),
++                }
++            ]
++        )
++        .choices[0]
++        .message.content
++    )
++    sys_msg_list.append({"name": pos, "system_message": resp_agent_sys_msg, "description": resp_desc_msg})
++
++
++# The generated profile will have the following format:
++
++# In[5]:
++
++
++sys_msg_list
++
++
++# We can save the generated agents' information into a json file.
++
++# In[6]:
++
++
++json.dump(sys_msg_list, open("./agent_library_example.json", "w"), indent=4)
++
++
++# ## Build agents from library (by LLM)
++# Here, we introduce how to build agents from the generated library. As in the previous `build`, we also need to specify a `building_task` that lets the build manager know which agents should be selected from the library according to the task. 
++# 
++# We also need to specify a `library_path_or_json`, which can be a path of library or a JSON string with agents' configs. Here, we use the previously saved path as the library path.
++
++# In[7]:
++
++
++library_path_or_json = "./agent_library_example.json"
++building_task = "Find a paper on arxiv by programming, and analyze its application in some domain. For example, find a recent paper about gpt-4 on arxiv and find its potential applications in software."
++
++
++# Then, we can call the `build_from_library` from the AgentBuilder to generate a list of agents from the library and let them complete the user's `execution_task` in a group chat.
++
++# In[10]:
++
++
++new_builder = AgentBuilder(
++    config_file_or_env=config_file_or_env, builder_model="gpt-4-1106-preview", agent_model="gpt-4-1106-preview"
++)
++agent_list, _ = new_builder.build_from_library(building_task, library_path_or_json, llm_config)
++start_task(
++    execution_task="Find a recent paper about explainable AI on arxiv and find its potential applications in medical.",
++    agent_list=agent_list,
++)
++new_builder.clear_all_agents()
++
++
++# ## Build agents from library (by description-task similarity)
++# We also support using embedding similarity to select agents. You can use a [Sentence-Transformers model](https://www.sbert.net/docs/pretrained_models.html) as an embedding extractor, and AgentBuilder will select agents with profiles that are the most similar to the building task from the library by comparing their embedding similarity. This will reduce the use of LLMs but may have less accuracy.
++
++# In[9]:
++
++
++new_builder = AgentBuilder(
++    config_file_or_env=config_file_or_env, builder_model="gpt-4-1106-preview", agent_model="gpt-4-1106-preview"
++)
++agent_list, _ = new_builder.build_from_library(
++    building_task, library_path_or_json, llm_config, embedding_model="all-mpnet-base-v2"
++)
++start_task(
++    execution_task="Find a recent paper about gpt-4 on arxiv and find its potential applications in software.",
++    agent_list=agent_list,
++)
++new_builder.clear_all_agents()
++
+diff --git a/notebook/autobuild_basic.py b/notebook/autobuild_basic.py
+new file mode 100644
+index 00000000..48bb6cfa
+--- /dev/null
++++ b/notebook/autobuild_basic.py
+@@ -0,0 +1,180 @@
++#!/usr/bin/env python
++# coding: utf-8
++
++# # AutoBuild
++# By: [Linxin Song](https://linxins97.github.io/), [Jieyu Zhang](https://jieyuz2.github.io/)
++# Reference: [Agent AutoBuild](https://microsoft.github.io/autogen/blog/2023/11/26/Agent-AutoBuild/)
++# 
++# AutoGen offers conversable agents powered by LLM, tool, or human, which can be used to perform tasks collectively via automated chat. This framework allows tool use and human participation through multi-agent conversation.
++# Please find documentation about this feature [here](https://microsoft.github.io/autogen/docs/Use-Cases/agent_chat).
++# 
++# In this notebook, we introduce a new class, `AgentBuilder`, to help user build an automatic task solving process powered by multi-agent system. Specifically, in `build()`, we prompt a LLM to create multiple participant agent and initialize a group chat, and specify whether this task need programming to solve. AgentBuilder also support open-source LLMs by [vLLM](https://docs.vllm.ai/en/latest/index.html) and [Fastchat](https://github.com/lm-sys/FastChat). Check the supported model list [here](https://docs.vllm.ai/en/latest/models/supported_models.html).
++
++# ## Requirement
++# 
++# AutoBuild require `autogen-agentchat[autobuild]~=0.2`, which can be installed by the following command:
++
++# In[ ]:
++
++
++get_ipython().run_line_magic('pip', 'install autogen-agentchat[autobuild]~=0.2')
++
++
++# ## Step 1: prepare configuration and some useful functions
++# Prepare a `config_file_or_env` for assistant agent to limit the choice of LLM you want to use in this task. This config can be a path of json file or a name of environment variable. A `default_llm_config` is also required for initialize the specific config of LLMs like seed, temperature, etc...
++
++# In[1]:
++
++
++import autogen
++from autogen.agentchat.contrib.agent_builder import AgentBuilder
++
++config_file_or_env = "OAI_CONFIG_LIST"
++llm_config = {"temperature": 0}
++config_list = autogen.config_list_from_json(config_file_or_env, filter_dict={"model": ["gpt-4-turbo", "gpt-4"]})
++
++
++def start_task(execution_task: str, agent_list: list, coding=True):
++    group_chat = autogen.GroupChat(
++        agents=agent_list,
++        messages=[],
++        max_round=12,
++        allow_repeat_speaker=agent_list[:-1] if coding is True else agent_list,
++    )
++    manager = autogen.GroupChatManager(
++        groupchat=group_chat,
++        llm_config={"config_list": config_list, **llm_config},
++    )
++    agent_list[0].initiate_chat(manager, message=execution_task)
++
++
++# ## Step 2: create a AgentBuilder
++# Create a `AgentBuilder` with the specified `config_path_or_env`. AgentBuilder will use `gpt-4` in default to complete the whole process, you can specify the `builder_model` and `agent_model` to other OpenAI model to match your task. 
++# You can also specify an open-source LLM supporting by vLLM and FastChat, see blog for more details.
++
++# In[2]:
++
++
++builder = AgentBuilder(
++    config_file_or_env=config_file_or_env, builder_model=["gpt-4-turbo"], agent_model=["gpt-4-turbo"]
++)
++
++
++# ## Step 3: specify a building task
++# 
++# Specify a building task with a general description. Building task will help build manager (a LLM) decide what agents should be built.
++
++# In[3]:
++
++
++building_task = "Generate some agents that can find papers on arxiv by programming and analyzing them in specific domains related to computer science and medical science."
++
++
++# ## Step 4: build group chat agents
++# Use `build()` to let build manager (the specified `builder_model`) complete the group chat agents generation. If you think coding is necessary in your task, you can use `coding=True` to add a user proxy (an automatic code interpreter) into the agent list, like: 
++# ```python
++# builder.build(building_task, default_llm_config, coding=True)
++# ```
++# If `coding` is not specified, AgentBuilder will determine on its own whether the user proxy should be added or not according to the task.
++
++# In[4]:
++
++
++agent_list, agent_configs = builder.build(building_task, llm_config)
++
++
++# ## Step 5: execute task
++# Let agents generated in `build()` to complete the task collaboratively in a group chat.
++
++# In[5]:
++
++
++start_task(
++    execution_task="Find a recent paper about gpt-4 on arxiv and find its potential applications in software.",
++    agent_list=agent_list,
++    coding=agent_configs["coding"],
++)
++
++
++# ## Step 6 (Optional): clear all agents and prepare for the next task
++# You can clear all agents generated in this task by the following code if your task is completed or the next task is largely different from the current task. If the agent's backbone is an open-source LLM, this process will also shut down the endpoint server. If necessary, you can use `recycle_endpoint=False` to retain the previous open-source LLMs' endpoint server.
++
++# In[6]:
++
++
++builder.clear_all_agents(recycle_endpoint=True)
++
++
++# ## Save & load configs
++# 
++# You can save all necessary information of the built group chat agents. Here is a case for those agents generated in the above task:
++# ```json
++# {
++#     "building_task": "Generate some agents that can find papers on arxiv by programming and analyzing them in specific domains related to computer science and medical science.",
++#     "agent_configs": [
++#         {
++#             "name": "ArXiv_Data_Scraper_Developer",
++#             "model": "gpt-4-1106-preview",
++#             "system_message": "You are now in a group chat. You need to complete a task with other participants. As an ArXiv_Data_Scraper_Developer, your focus is to create and refine tools capable of intelligent search and data extraction from arXiv, honing in on topics within the realms of computer science and medical science. Utilize your proficiency in Python programming to design scripts that navigate, query, and parse information from the platform, generating valuable insights and datasets for analysis. \n\nDuring your mission, it\u2019s not just about formulating queries; your role encompasses the optimization and precision of the data retrieval process, ensuring relevance and accuracy of the information extracted. If you encounter an issue with a script or a discrepancy in the expected output, you are encouraged to troubleshoot and offer revisions to the code you find in the group chat.\n\nWhen you reach a point where the existing codebase does not fulfill task requirements or if the operation of provided code is unclear, you should ask for help from the group chat manager. They will facilitate your advancement by providing guidance or appointing another participant to assist you. Your ability to adapt and enhance scripts based on peer feedback is critical, as the dynamic nature of data scraping demands ongoing refinement of techniques and approaches.\n\nWrap up your participation by confirming the user's need has been satisfied with the data scraping solutions you've provided. Indicate the completion of your task by replying \"TERMINATE\" in the group chat.",
++#             "description": "ArXiv_Data_Scraper_Developer is a specialized software development role requiring proficiency in Python, including familiarity with web scraping libraries such as BeautifulSoup or Scrapy, and a solid understanding of APIs and data parsing. They must possess the ability to identify and correct errors in existing scripts and confidently engage in technical discussions to improve data retrieval processes. The role also involves a critical eye for troubleshooting and optimizing code to ensure efficient data extraction from the ArXiv platform for research and analysis purposes."
++#         },
++#         {
++#             "name": "Computer_Science_Research_Analyst",
++#             "model": "gpt-4-1106-preview",
++#             "system_message": "You are now in a group chat. You need to complete a task with other participants. As a Computer Science Research Analyst, your objective is to utilize your analytical capabilities to identify and examine scholarly articles on arXiv, focusing on areas bridging computer science and medical science. Employ Python for automation where appropriate and leverage your expertise in the subject matter to draw insights from the research.\n\nEnsure that the information is acquired systematically; tap into online databases, interpret data sets, and perform literature reviews to pinpoint relevant findings. Should you encounter a complex problem or if you find your progress stalled, feel free to question the existing approaches discussed in the chat or contribute an improved method or analysis.\n\nIf the task proves to be beyond your current means or if you face uncertainty at any stage, seek assistance from the group chat manager. The manager is available to provide guidance or to involve another expert if necessary to move forward effectively.\n\nYour contributions are crucial, and it is important to communicate your findings and conclusions clearly. Once you believe the task is complete and the group's need has been satisfied, please affirm the completion by replying \"TERMINATE\".",
++#             "description": "Computer_Science_Research_Analyst is a role requiring strong analytical skills, a deep understanding of computer science concepts, and proficiency in Python for data analysis and automation. This position should have the ability to critically assess the validity of information, challenge assumptions, and provide evidence-based corrections or alternatives. They should also have excellent communication skills to articulate their findings and suggestions effectively within the group chat."
++#         },
++#         {
++#             "name": "Medical_Science_Research_Analyst",
++#             "model": "gpt-4-1106-preview",
++#             "system_message": "You are now in a group chat. You need to complete a task with other participants. As a Medical_Science_Research_Analyst, your function is to harness your analytical strengths and understanding of medical research to source and evaluate pertinent papers from the arXiv database, focusing on the intersection of computer science and medical science. Utilize your Python programming skills to automate data retrieval and analysis tasks. Engage in systematic data mining to extract relevant content, then apply your analytical expertise to interpret the findings qualitatively. \n\nWhen there is a requirement to gather information, employ Python scripts to automate the aggregation process. This could include scraping web data, retrieving and processing documents, and performing content analyses. When these scripts produce outputs, use your subject matter expertise to evaluate the results. \n\nProgress through your task step by step. When an explicit plan is absent, present a structured outline of your intended methodology. Clarify which segments of the task are handled through automation, and which necessitate your interpretative skills. \n\nIn the event code is utilized, the script type must be specified. You are expected to execute the scripts provided without making changes. Scripts are to be complete and functionally standalone. Should you encounter an error upon execution, critically review the output, and if needed, present a revised script for the task at hand. \n\nFor tasks that require saving and executing scripts, indicate the intended filename at the beginning of the script. \n\nMaintain clear communication of the results by harnessing the 'print' function where applicable. If an error arises or a task remains unsolved after successful code execution, regroup to collect additional information, reassess your approach, and explore alternative strategies. \n\nUpon reaching a conclusion, substantiate your findings with credible evidence where possible.\n\nConclude your participation by confirming the task's completion with a \"TERMINATE\" response.\n\nShould uncertainty arise at any point, seek guidance from the group chat manager for further directives or reassignment of the task.",
++#             "description": "The Medical Science Research Analyst is a professionally trained individual with strong analytical skills, specializing in interpreting and evaluating scientific research within the medical field. They should possess expertise in data analysis, likely with proficiency in Python for analyzing datasets, and have the ability to critically assess the validity and relevance of previous messages or findings relayed in the group chat. This role requires a solid foundation in medical knowledge to provide accurate and evidence-based corrections or insights."
++#         },
++#         {
++#             "name": "Data_Analysis_Engineer",
++#             "model": "gpt-4-1106-preview",
++#             "system_message": "You are now in a group chat. You need to complete a task with other participants. As a Data Analysis Engineer, your role involves leveraging your analytical skills to gather, process, and analyze large datasets. You will employ various data analysis techniques and tools, particularly Python for scripting, to extract insights from the data related to computer science and medical science domains on arxiv.\n\nIn scenarios where information needs to be collected or analyzed, you will develop Python scripts to automate the data retrieval and processing tasks. For example, you may write scripts to scrape the arXiv website, parse metadata of research papers, filter content based on specific criteria, and perform statistical analysis or data visualization. \n\nYour workflow will include the following steps:\n\n1. Use your Python coding abilities to design scripts for data extraction and analysis. This can involve browsing or searching the web, downloading and reading files, or printing the content of web pages or files relevant to the given domains.\n2. After gathering the necessary data, apply your data analysis expertise to derive meaningful insights or patterns present in the data. This should be done methodically, making the most of your Python skills for data manipulation and interpretation.\n3. Communicate your findings clearly to the group chat. Ensure the results are straightforward for others to understand and act upon.\n4. If any issues arise from executing the code, such as lack of output or unexpected results, you can question the previous messages or code in the group chat and attempt to provide a corrected script or analysis.\n5. When uncertain or facing a complex problem that you cannot solve alone, ask for assistance from the group chat manager. They can either provide guidance or assign another participant to help you.\n\nOnce you believe the task is completed satisfactorily, and you have fulfilled the user's need, respond with \"TERMINATE\" to signify the end of your contribution to the task. Remember, while technical proficiency in Python is essential for this role, the ability to work collaboratively within the group chat, communicate effectively, and adapt to challenges is equally important.",
++#             "description": "Data_Analysis_Engineer is a professional adept in collecting, analyzing, and interpreting large datasets, using statistical tools and machine learning techniques to provide actionable insights. They should possess strong Python coding skills for data manipulation and analysis, an understanding of database management, as well as the ability to communicate complex results effectively to non-technical stakeholders. This position should be allowed to speak when data-driven clarity is needed or when existing analyses or methodologies are called into question."
++#         },
++#         {
++#             "name": "ML_Paper_Summarization_Specialist",
++#             "model": "gpt-4-1106-preview",
++#             "system_message": "You are now in a group chat. You need to complete a task with other participants. As an ML_Paper_Summarization_Specialist, your role entails leveraging machine learning techniques to extract and analyze academic papers from arXiv, focusing on domains that intersect computer science and medical science. Utilize your expertise in natural language processing and data analysis to identify relevant papers, extract key insights, and generate summaries that accurately reflect the advancements and findings within those papers.\n\nYou are expected to apply your deep understanding of machine learning algorithms, data mining, and information retrieval to construct models and systems that can efficiently process and interpret scientific literature.\n\nIf you encounter any challenges in accessing papers, parsing content, or algorithmic processing, you may seek assistance by presenting your issue to the group chat. Should there be a disagreement regarding the efficacy of a method or the accuracy of a summarization, you are encouraged to critically evaluate previous messages or outputs and offer improved solutions to enhance the group's task performance.\n\nShould confusion arise during the task, rather than relying on coding scripts, please request guidance from the group chat manager, and allow them to facilitate the necessary support by inviting another participant who can aid in overcoming the current obstacle.\n\nRemember, your primary duty is to synthesize complex academic content into concise, accessible summaries that will serve as a valuable resource for researchers and professionals seeking to stay abreast of the latest developments in their respective fields. \n\nOnce you believe your task is completed and the summaries provided meet the necessary standards of accuracy and comprehensiveness, reply \"TERMINATE\" to signal the end of your contribution to the group's task.",
++#             "description": "The ML_Paper_Summarization_Specialist is a professional adept in machine learning concepts and current research trends, with strong analytical skills to critically evaluate information, synthesizing knowledge from academic papers into digestible summaries. This specialist should be proficient in Python for text processing and have the ability to provide constructive feedback on technical discussions, guide effective implementation, and correct misconceptions or errors related to machine learning theory and practice in the chat. They should be a reliable resource for clarifying complex information and ensuring accurate application of machine learning techniques within the group chat context."
++#         }
++#     ],
++#     "coding": true,
++#     "default_llm_config": {
++#         "temperature": 0
++#     },
++#     "code_execution_config": {
++#         "work_dir": "groupchat",
++#         "use_docker": false,
++#         "timeout": 60,
++#         "last_n_messages": 2
++#     }
++# }
++# ```
++# These information will be saved in JSON format. You can provide a specific filename, otherwise, AgentBuilder will save config to the current path with a generated filename 'save_config_TASK_MD5.json'.
++
++# In[7]:
++
++
++saved_path = builder.save()
++
++
++# After that, you can load the saved config and skip the building process. AgentBuilder will create agents with those information without prompting the builder manager.
++
++# In[8]:
++
++
++new_builder = AgentBuilder(config_file_or_env=config_file_or_env)
++agent_list, agent_configs = new_builder.load(
++    "./save_config_c52224ebd16a2e60b348f3f04ac15e79.json"
++)  # load previous agent configs
++start_task(
++    execution_task="Find a recent paper about LLaVA on arxiv and find its potential applications in computer vision.",
++    agent_list=agent_list,
++)
++new_builder.clear_all_agents()
++
+diff --git a/notebook/autobuild_function_calling.py b/notebook/autobuild_function_calling.py
+new file mode 100644
+index 00000000..af4bca35
+--- /dev/null
++++ b/notebook/autobuild_function_calling.py
+@@ -0,0 +1,172 @@
++#!/usr/bin/env python
++# coding: utf-8
++
++# # AutoBuild Agents function calling
++# By: [Krishna Shedbalkar](https://github.com/krishnashed/)
++# 
++# In this notebook, we introduce a way for Agents created using `Autobuild` to do function calling. Developers can specify a function, function name and function description which will thereafter be assigned and executed by the most suitable agent created using AutoBuild.
++
++# ## Requirement
++# 
++# AutoBuild require `pyautogen[autobuild]`, which can be installed by the following command:
++
++# In[ ]:
++
++
++get_ipython().run_line_magic('pip', 'install pyautogen[autobuild]')
++
++
++# ## Step 1: Prepare configuration and some useful functions
++# 
++# Prepare a `config_file_or_env` for assistant agent to limit the choice of LLM you want to use in this task. This config can be a path of json file or a name of environment variable. A `default_llm_config` is also required for initialize the specific config of LLMs like seed, temperature, etc. Preventing UserProxy agent being called multiple times by adding `allow_repeat_speaker=agent_list[:-1]`
++
++# In[1]:
++
++
++import autogen
++from autogen.agentchat.contrib.agent_builder import AgentBuilder
++
++config_file_or_env = "OAI_CONFIG_LIST"
++config_list = autogen.config_list_from_json(config_file_or_env, filter_dict={"model": ["gpt-4-1106-preview", "gpt-4"]})
++llm_config = {
++    "config_list": config_list,
++    "timeout": 120,
++}
++
++
++def start_task(execution_task: str, agent_list: list):
++    group_chat = autogen.GroupChat(agents=agent_list, messages=[], allow_repeat_speaker=agent_list[:-1], max_round=12)
++    manager = autogen.GroupChatManager(groupchat=group_chat, llm_config={"config_list": config_list})
++    agent_list[0].initiate_chat(manager, message=execution_task)
++
++
++# ## Step 2: Create a AgentBuilder
++# 
++# Create a `AgentBuilder` with the specified `config_path_or_env`. AgentBuilder will use `gpt-4` in default to complete the whole process, you can specify the `builder_model` and `agent_model` to other OpenAI model to match your task. You can also specify an open-source LLM supporting by vLLM and FastChat, see blog for more details.
++
++# In[2]:
++
++
++builder = AgentBuilder(
++    config_file_or_env=config_file_or_env, builder_model="gpt-4-1106-preview", agent_model="gpt-4-1106-preview"
++)
++
++
++# ## Step 3: Specify a building task
++# 
++# Specify a building task with a general description. Building task will help build manager (a LLM) decide what agents should be built.
++
++# In[10]:
++
++
++building_task = "Analyze and list the trending topics in arxiv papers related to GPT-4"
++
++
++# ## Step 4: Define functions
++# 
++# Define functions to be executed by the Agents of AutoBuild, further specify details like `name`, `description` and `function` of all the functions in an array called `list_of_functions` which will be passed to `builder.build()`
++
++# In[12]:
++
++
++import time
++from datetime import datetime, timedelta
++from typing import Dict
++
++import feedparser
++
++
++def get_arxiv_paper_from_a_week(search_topic: str) -> Dict:
++    # arXiv API endpoint
++    url = "http://export.arxiv.org/api/query?"
++
++    # Search parameters
++    max_results = 10
++
++    query = (
++        f"{url}search_query=all:{search_topic}&max_results={max_results}&sortBy=lastUpdatedDate&sortOrder=descending"
++    )
++
++    # Parse the feed
++    feed = feedparser.parse(query)
++
++    now = datetime.now()
++    week_ago = now - timedelta(weeks=1)
++
++    papers = []
++
++    # Get papers from last week
++    for entry in feed.entries:
++        published_time = datetime.strptime(entry.published, "%Y-%m-%dT%H:%M:%SZ")
++        if published_time > week_ago:
++            list_of_authors = ", ".join(author.name for author in entry.authors)
++
++            papers.append(
++                {
++                    "title": entry.title,
++                    "authors": list_of_authors,
++                    "published_on": time.strftime("%B %d, %Y", entry.published_parsed),
++                    "summary": entry.summary,
++                    "link": entry.link,
++                }
++            )
++
++    return papers
++
++
++list_of_functions = [
++    {
++        "name": "get_arxiv_paper_from_a_week",
++        "description": "Get arxiv papers published in last week",
++        "function": get_arxiv_paper_from_a_week,
++    }
++]
++
++
++# ## Step 5: build group chat agents
++# 
++# Use `build()` to let build manager (the specified `builder_model`) complete the group chat agents generation. Specify `list_of_functions` to be used by the Agents
++
++# In[13]:
++
++
++agent_list, agent_configs = builder.build(building_task, llm_config, list_of_functions, max_agents=3)
++
++
++# Here you can see that Function `exec_python` has been associated with `ArxivAPI_Expert` Agent.
++
++# ## Step 6: execute task
++# 
++# Let agents generated in `build()` to complete the task collaboratively in a group chat.
++
++# In[14]:
++
++
++start_task(execution_task=building_task, agent_list=agent_list)
++
++
++# ## Step 7 (Optional): clear all agents and prepare for the next task
++# 
++# You can clear all agents generated in this task by the following code if your task is completed or the next task is largely different from the current task. If the agent's backbone is an open-source LLM, this process will also shut down the endpoint server. If necessary, you can use `recycle_endpoint=False` to retain the previous open-source LLMs' endpoint server.
++
++# In[15]:
++
++
++builder.clear_all_agents(recycle_endpoint=True)
++
++
++# ## Save & load configs
++# 
++# You can save all necessary information of the built group chat agents. Here is a case for those agents generated in the above task:
++
++# In[16]:
++
++
++saved_path = builder.save()
++
++
++# In[ ]:
++
++
++
++
